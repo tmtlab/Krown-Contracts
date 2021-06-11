@@ -1191,7 +1191,7 @@ contract KrownMaster is ReentrancyGuard, Pausable, Ownable{
     /**
      * @dev returns the current number of pools
      */
-    function poolLength() external view returns (uint256) {
+    function poolLength() public view returns (uint256) {
         return poolInfo.length;
     }
     
@@ -1223,18 +1223,31 @@ contract KrownMaster is ReentrancyGuard, Pausable, Ownable{
     }
     
     /**
+     * @dev function used to update all the last reward numbers when the pause/unpaused function is used
+     */
+    function updateAllLastRewardNumbers() internal {
+        for(uint256 i = 0; i < poolLength(); i++){
+            PoolInfo storage pool = poolInfo[i];
+            pool.lastRewardBlock = block.number;
+        }
+    }
+    
+    /**
      * @dev used to pause the pools being able to deposit new lpToken
      */
     function pause() external onlyOwner{
         _pause();
         pausedUpdatePools = true;
+        updateAllLastRewardNumbers();
     }
     
     /**
      * @dev used to pause a single pool from being able to deposit new lpToken
      */
     function pausePool(uint256 _pid) external onlyOwner{
+        PoolInfo storage pool = poolInfo[_pid];
         pausedPool[_pid] = true;
+        pool.lastRewardBlock = block.number;
     }
     
     /**
@@ -1243,13 +1256,16 @@ contract KrownMaster is ReentrancyGuard, Pausable, Ownable{
     function unpause() external onlyOwner{
         _unpause();
         pausedUpdatePools = false;
+        updateAllLastRewardNumbers();
     }
     
     /**
      * @dev used to unpause a single pool
      */
     function unpausePool(uint256 _pid) external onlyOwner{
+        PoolInfo storage pool = poolInfo[_pid];
         pausedPool[_pid] = false;
+        pool.lastRewardBlock = block.number;
     }
     
     /**
@@ -1277,12 +1293,9 @@ contract KrownMaster is ReentrancyGuard, Pausable, Ownable{
      * @dev used to withdraw the lpToken
      * _pid: is the id of the pool that you want to use
      * _amount: is the amount of tokens that you want to deposit
-     * NOTE: if pausedUpdatePools is true the pool won't be updated when you call this function, so if the contract is pause you can't deposit and you can't update the pools, but you can withdraw
      */
     function withdraw(uint256 _pid, uint256 _amount) public nonReentrant{
-        if(!pausedUpdatePools && !pausedPool[_pid]){
-            updatePool(_pid);
-        }
+        updatePool(_pid);
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
         require(user.amount >= _amount, "Amount: amount exceedes account");
@@ -1333,7 +1346,7 @@ contract KrownMaster is ReentrancyGuard, Pausable, Ownable{
         PoolInfo memory pool = poolInfo[_pid];
         if(pool.totalSupply > 0){
             if(pool.investor.length > 0){
-                if(lastBlock > block.number){
+                if(lastBlock > block.number && !pausedUpdatePools && !pausedPool[_pid]){
                     uint256 rewardToDeliver = pool.krwPerBlock.mul(block.number.sub(pool.lastRewardBlock));
                     for(uint256 i = 0; i < pool.investor.length; i++){
                         userInfo[_pid][pool.investor[i]].rewardDebt = userInfo[_pid][pool.investor[i]].rewardDebt.add(
@@ -1354,15 +1367,34 @@ contract KrownMaster is ReentrancyGuard, Pausable, Ownable{
             updatePool(pid);
         }
     }
+
+    /**
+     * @dev Update reward variables for a range of pools. Be careful of gas spending!
+     * startPool: is the id of the pool where you want to start the update
+     * endPool: is the id of the last pool that you want to update, all the pools in between this and the startPool will be updated
+     */
+    function massUpdatePoolsInRange(uint256 startPool, uint256 endPool) external onlyOwner{
+        require(endPool < poolLength(), "EndPool is greater than poolLength");
+        for (startPool; startPool <= endPool; startPool++) {
+            updatePool(startPool);
+        }
+    }
+    
+    /**
+     * @dev Update reward variables for a set of pools. Since it is activated only by the owner, will the owner to ensure that every pool exists and is the right pool to update
+     */
+    function massUpdatePoolsInSet(uint256[] memory poolsId) external onlyOwner{
+        for (uint256 _pid = 0; _pid < poolsId.length; _pid++) {
+            updatePool(poolsId[_pid]);
+        }
+    }
     
     /**
      * @dev function used to withdraw the rewards earned
      * _pid: is the id of the pool that you want to use
      */
     function claim(uint256 _pid) external nonReentrant{
-        if(!pausedUpdatePools && !pausedPool[_pid]){
-            updatePool(_pid);
-        }
+        updatePool(_pid);
         UserInfo storage user = userInfo[_pid][msg.sender];
         if(user.rewardDebt > 0){
             if(krw.transfer(msg.sender, user.rewardDebt)){
