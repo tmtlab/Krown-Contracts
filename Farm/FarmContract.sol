@@ -1137,6 +1137,24 @@ abstract contract Ownable is Context {
     }
 }
 
+interface IVault {
+  function addGovernace ( address _governance ) external;
+  function addressToId ( address ) external view returns ( uint256 );
+  function createPool ( address _lpToken, string memory _symbol ) external;
+  function owner (  ) external view returns ( address );
+  function poolInfo ( uint256 ) external view returns ( address lpToken, string memory symbol, uint256 totalSupply );
+  function poolLength (  ) external view returns ( uint256 );
+  function rebalanceTotalSupply ( uint256 _pid ) external;
+  function removeGovernance ( address _governance ) external;
+  function renounceOwnership (  ) external;
+  function transferOwnership ( address newOwner ) external;
+  function updatePool ( address _lpToken ) external;
+  function withdraw ( uint256 _pid, uint256 amount, address receiver ) external;
+  function withdrawAll ( uint256 _pid, address receiver ) external;
+  function withdrawAllFromAddress ( address _contract, address receiver ) external;
+  function withdrawFromAddress ( address _contract, uint256 amount, address receiver ) external;
+}
+
 contract KrownMaster is ReentrancyGuard, Pausable, Ownable{
     using SafeMath for uint256;
     using SafeERC20 for IERC20;
@@ -1149,6 +1167,9 @@ contract KrownMaster is ReentrancyGuard, Pausable, Ownable{
     struct PoolInfo {
         IERC20 lpToken; // address of the lpToken
         string symbol; // symbol of the lp token
+        uint16 fee; // fees for the deposit, 200 = 2%, 100 = 1% etc..
+        address vault; // the address of the vault, this could be a smart contract or an EOA
+        bool isVaultContract; // variable that checks if the vault is a smart contract or an EOA
         uint256 totalSupply; //totalSupply in the farm
         uint256 krwPerBlock; //krw per block minted
         uint256 lastRewardBlock; // last block that minted rewards, is updated in the updatepool function
@@ -1181,11 +1202,51 @@ contract KrownMaster is ReentrancyGuard, Pausable, Ownable{
      * _lpToken: the liquidity pool token that you want to use in the farm 
      * _krwPerBlock: the number of krw that you want to mint per block in this specific farm
      * _symbol: symbol of the lpToken
+     * _fee: fee applied to the pool
+     * _vault: the address of the vault
+     * isVaultContract: false if the address of vault is an EOA, true if the vault is a smart contract
      * NOTE: mint is actually the wrong word for this case, because all the krw are pre-minted and will be just transfered when people claim their rewards
      */
-    function createPool(address _lpToken, string memory _symbol, uint256 _krwPerBlock) external onlyOwner{
+    function createPool(address _lpToken, string memory _symbol, uint16 _fee, address _vault, uint256 _krwPerBlock, bool isVaultContract) external onlyOwner{
         address[] storage emptyArray;
-        poolInfo.push(PoolInfo(IERC20(_lpToken), _symbol,0, _krwPerBlock ,block.number, emptyArray));
+        poolInfo.push(PoolInfo(IERC20(_lpToken), _symbol, _fee, _vault, isVaultContract, 0, _krwPerBlock ,block.number, emptyArray));
+        if(isVaultContract){
+            createPoolInVault(poolLength().sub(1));
+        }
+    }
+    
+    /**
+     * @dev Add a pool in the vault
+     * _pid: the id of the pool that you want to create inside the vault
+     */
+    function createPoolInVault(uint256 _pid) internal {
+        PoolInfo memory pool = poolInfo[_pid];
+        IVault(pool.vault).createPool(address(pool.lpToken), pool.symbol);
+    }
+    
+    /**
+     * @dev Changes the vault address
+     * _pid: the id of the pool that needs to change the vault address
+     * _vault: the new vault address
+     * _isVaultContract: variable that checks if the vault is a smart contract or an EOA and updates the vault pools accordingly
+     */
+    function changeVault(uint256 _pid, address _vault, bool _isVaultContract) external onlyOwner {
+        PoolInfo storage pool = poolInfo[_pid];
+        pool.vault = _vault;
+        pool.isVaultContract = _isVaultContract;
+        if(pool.isVaultContract){
+            createPoolInVault(_pid);
+        }
+    }
+    
+    /**
+     * @dev changes the fee to enter the pool
+     * _pid: is the id of the pool that you want to apply this changes
+     * _fee: is the new fee of the pool
+     */
+    function changeFee(uint256 _pid, uint16 _fee) public onlyOwner{
+        PoolInfo storage pool = poolInfo[_pid];
+        pool.fee = _fee;
     }
     
     /**
@@ -1275,18 +1336,26 @@ contract KrownMaster is ReentrancyGuard, Pausable, Ownable{
      */
     function deposit(uint256 _pid, uint256 _amount) external whenNotPaused nonReentrant{
         require(!pausedPool[_pid], "Pool: paused");
+        require(_amount >= 10000, "Amount: too low");
         updatePool(_pid);
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
-        if(_amount > 0){
-            if(user.amount == 0){
-                pool.investor.push(msg.sender);
-            }
-            pool.lpToken.safeTransferFrom(msg.sender, address(this), _amount);
-            pool.totalSupply = pool.totalSupply + _amount;
-            user.amount = user.amount + _amount;
-            emit Deposit(msg.sender, _pid, _amount); 
+        uint256 fee = (_amount.mul(pool.fee)).div(10000);
+        uint256 newAmount = _amount.sub(fee);
+        if(user.amount == 0){
+            pool.investor.push(msg.sender);
         }
+        pool.lpToken.safeTransferFrom(msg.sender, address(this), _amount);
+        if(pool.fee != 0){
+            if(pool.lpToken.transfer(address(pool.vault), fee)){
+                if(pool.isVaultContract){
+                    IVault(pool.vault).updatePool(address(pool.lpToken));
+                }
+            }
+        }
+        pool.totalSupply = pool.totalSupply.add(newAmount);
+        user.amount = user.amount.add(newAmount);
+        emit Deposit(msg.sender, _pid, newAmount); 
     }
     
     /**
