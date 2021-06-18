@@ -701,12 +701,53 @@ contract VaultContract is Ownable{
         string symbol; // symbol of the lp token
         uint256 totalSupply; //totalSupply in the farm
     }
+    mapping(address => bool) public tokenAlreadyInPool;
     PoolInfo[] public poolInfo;
     mapping(address => uint256) public addressToId;
     mapping(address => bool) governance;
-
-    constructor() public {
+    address firstGovernanceAddress;
+    address secondGovernanceAddress;
+    address thirdGovernanceAddress;
+    mapping(address => bool) public governanceWithdraw;
+    
+    constructor(
+        address _firstGovernanceAddress,
+        address _secondGovernanceAddress,
+        address _thirdGovernanceAddress
+    ) public {
         governance[msg.sender] = true;
+        firstGovernanceAddress = _firstGovernanceAddress;
+        secondGovernanceAddress = _secondGovernanceAddress;
+        thirdGovernanceAddress = _thirdGovernanceAddress;
+    }
+    
+    modifier multiGovernance {
+      require((governanceWithdraw[firstGovernanceAddress] == true && governanceWithdraw[secondGovernanceAddress] == true) || (governanceWithdraw[firstGovernanceAddress] == true && governanceWithdraw[thirdGovernanceAddress] == true) || (governanceWithdraw[thirdGovernanceAddress] == true && governanceWithdraw[secondGovernanceAddress] == true));
+      _;
+    }
+    
+    modifier onlyGovernance {
+        require(msg.sender == firstGovernanceAddress || msg.sender == secondGovernanceAddress || msg.sender == thirdGovernanceAddress);
+        _;
+    }
+    
+    function setGovernanceVote(bool vote) public onlyGovernance{
+        governanceWithdraw[msg.sender] = vote;
+    }
+    
+    function changeFirstGovernance(address newGovernance) public{
+        require(firstGovernanceAddress == msg.sender);
+        firstGovernanceAddress = newGovernance;
+    }
+    
+    function changeSecondGovernance(address newGovernance) public{
+        require(secondGovernanceAddress == msg.sender);
+        secondGovernanceAddress = newGovernance;
+    }
+    
+    function changeThirdGovernance(address newGovernance) public{
+        require(thirdGovernanceAddress == msg.sender);
+        thirdGovernanceAddress = newGovernance;
     }
     
     /**
@@ -717,8 +758,10 @@ contract VaultContract is Ownable{
      */
     function createPool(address _lpToken, string memory _symbol) external{
         require(governance[msg.sender], "!governance");
+        require(tokenAlreadyInPool[_lpToken] == false);
         poolInfo.push(PoolInfo(IERC20(_lpToken), _symbol, 0));
         addressToId[_lpToken] = poolLength().sub(1);
+        tokenAlreadyInPool[_lpToken] == true;
     }
     
     /**
@@ -759,7 +802,7 @@ contract VaultContract is Ownable{
      * amount: amount that you want to withdraw
      * receiver: receiver of the transfer
      */
-    function withdraw(uint256 _pid, uint256 amount, address receiver) external onlyOwner{
+    function withdraw(uint256 _pid, uint256 amount, address receiver) external onlyGovernance multiGovernance{
         PoolInfo storage pool = poolInfo[_pid];
         if(pool.lpToken.transfer(receiver, amount)){
             pool.totalSupply = pool.totalSupply.sub(amount);
@@ -781,7 +824,7 @@ contract VaultContract is Ownable{
      * amount: amount that you want to withdraw
      * receiver: receiver of the transfer
      */
-    function withdrawFromAddress(address _contract, uint256 amount, address receiver) external onlyOwner{
+    function withdrawFromAddress(address _contract, uint256 amount, address receiver) external onlyGovernance multiGovernance{
         IERC20(_contract).safeTransfer(receiver, amount);
         rebalanceTotalSupply(addressToId[_contract]);
     }
@@ -791,7 +834,7 @@ contract VaultContract is Ownable{
      * _pid: id of the pool
      * receiver: receiver of the transfer
      */
-    function withdrawAll(uint256 _pid, address receiver) external onlyOwner{
+    function withdrawAll(uint256 _pid, address receiver) external onlyGovernance multiGovernance{
         PoolInfo storage pool = poolInfo[_pid];
         if(pool.lpToken.transfer(receiver, pool.lpToken.balanceOf(address(this)))){
             pool.totalSupply = 0;   
@@ -803,7 +846,7 @@ contract VaultContract is Ownable{
      * _contract: the contract of the token that is stuck
      * receiver: receiver of the transfer
      */
-    function withdrawAllFromAddress(address _contract, address receiver) external onlyOwner{
+    function withdrawAllFromAddress(address _contract, address receiver) external onlyGovernance multiGovernance{
         IERC20(_contract).safeTransfer(receiver, IERC20(_contract).balanceOf(address(this)));
         rebalanceTotalSupply(addressToId[_contract]);
     }

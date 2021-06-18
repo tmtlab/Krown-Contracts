@@ -1177,6 +1177,7 @@ contract KrownMaster is ReentrancyGuard, Pausable, Ownable{
     }
     
     IERC20 public krw;
+    mapping(address => bool) public tokenAlreadyInPool;
     PoolInfo[] public poolInfo;
     mapping(uint256 => mapping(address => UserInfo)) public userInfo;
     uint256 public lastBlock;
@@ -1186,14 +1187,53 @@ contract KrownMaster is ReentrancyGuard, Pausable, Ownable{
     event Claim(address indexed user, uint256 indexed pid, uint256 amount);
     event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
     address governance;
+    address firstGovernanceAddress;
+    address secondGovernanceAddress;
+    address thirdGovernanceAddress;
+    mapping(address => bool) public governanceWithdraw;
     mapping(uint256 => bool) public pausedPool;
 
     constructor(
         address _krw,
-        uint256 _lastBlock
+        uint256 _lastBlock,
+        address _firstGovernanceAddress,
+        address _secondGovernanceAddress,
+        address _thirdGovernanceAddress
     ) public {
         krw = IERC20(_krw);
         lastBlock = _lastBlock;
+        firstGovernanceAddress = _firstGovernanceAddress;
+        secondGovernanceAddress = _secondGovernanceAddress;
+        thirdGovernanceAddress = _thirdGovernanceAddress;
+    }
+    
+    modifier multiGovernance {
+      require((governanceWithdraw[firstGovernanceAddress] == true && governanceWithdraw[secondGovernanceAddress] == true) || (governanceWithdraw[firstGovernanceAddress] == true && governanceWithdraw[thirdGovernanceAddress] == true) || (governanceWithdraw[thirdGovernanceAddress] == true && governanceWithdraw[secondGovernanceAddress] == true));
+      _;
+    }
+    
+    modifier onlyGovernance {
+        require(msg.sender == firstGovernanceAddress || msg.sender == secondGovernanceAddress || msg.sender == thirdGovernanceAddress);
+        _;
+    }
+    
+    function setGovernanceVote(bool vote) public onlyGovernance{
+        governanceWithdraw[msg.sender] = vote;
+    }
+    
+    function changeFirstGovernance(address newGovernance) public{
+        require(firstGovernanceAddress == msg.sender);
+        firstGovernanceAddress = newGovernance;
+    }
+    
+    function changeSecondGovernance(address newGovernance) public{
+        require(secondGovernanceAddress == msg.sender);
+        secondGovernanceAddress = newGovernance;
+    }
+    
+    function changeThirdGovernance(address newGovernance) public{
+        require(thirdGovernanceAddress == msg.sender);
+        thirdGovernanceAddress = newGovernance;
     }
     
     /**
@@ -1208,11 +1248,13 @@ contract KrownMaster is ReentrancyGuard, Pausable, Ownable{
      * NOTE: mint is actually the wrong word for this case, because all the krw are pre-minted and will be just transfered when people claim their rewards
      */
     function createPool(address _lpToken, string memory _symbol, uint16 _fee, address _vault, uint256 _krwPerBlock, bool isVaultContract) external onlyOwner{
+        require(tokenAlreadyInPool[_lpToken] == false);
         address[] storage emptyArray;
         poolInfo.push(PoolInfo(IERC20(_lpToken), _symbol, _fee, _vault, isVaultContract, 0, _krwPerBlock ,block.number, emptyArray));
         if(isVaultContract){
             createPoolInVault(poolLength().sub(1));
         }
+        tokenAlreadyInPool[_lpToken] = true;
     }
     
     /**
@@ -1414,13 +1456,16 @@ contract KrownMaster is ReentrancyGuard, Pausable, Ownable{
     function updatePool(uint256 _pid) public{
         PoolInfo memory pool = poolInfo[_pid];
         if(pool.totalSupply > 0){
-            if(pool.investor.length > 0){
-                if(lastBlock > block.number && !pausedUpdatePools && !pausedPool[_pid]){
-                    uint256 rewardToDeliver = pool.krwPerBlock.mul(block.number.sub(pool.lastRewardBlock));
-                    for(uint256 i = 0; i < pool.investor.length; i++){
-                        userInfo[_pid][pool.investor[i]].rewardDebt = userInfo[_pid][pool.investor[i]].rewardDebt.add(
-                                                                  (calculatePercentageFromNumber(userInfo[_pid][pool.investor[i]].amount, pool.totalSupply).mul(rewardToDeliver)).div(10000));
-                    }
+            if(pool.investor.length > 0 && !pausedUpdatePools && !pausedPool[_pid]){
+                uint256 rewardToDeliver = 0;
+                if(lastBlock > block.number){
+                    rewardToDeliver = pool.krwPerBlock.mul(block.number.sub(pool.lastRewardBlock));
+                }else{
+                    rewardToDeliver = pool.krwPerBlock.mul(lastBlock.sub(pool.lastRewardBlock));
+                }
+                for(uint256 i = 0; i < pool.investor.length; i++){
+                    userInfo[_pid][pool.investor[i]].rewardDebt = userInfo[_pid][pool.investor[i]].rewardDebt.add(
+                                                              (calculatePercentageFromNumber(userInfo[_pid][pool.investor[i]].amount, pool.totalSupply).mul(rewardToDeliver)).div(10000));
                 }
             }
             changeLastRewardBlock(_pid);
@@ -1443,6 +1488,7 @@ contract KrownMaster is ReentrancyGuard, Pausable, Ownable{
      * endPool: is the id of the last pool that you want to update, all the pools in between this and the startPool will be updated
      */
     function massUpdatePoolsInRange(uint256 startPool, uint256 endPool) external onlyOwner{
+        require(startPool <= endPool, "startPool is greater than endPool");
         require(endPool < poolLength(), "EndPool is greater than poolLength");
         for (startPool; startPool <= endPool; startPool++) {
             updatePool(startPool);
@@ -1477,14 +1523,14 @@ contract KrownMaster is ReentrancyGuard, Pausable, Ownable{
      * @dev since krw won't be minted but will be available in the contract, this function is used by the owner in case of emergency we need to withdraw a part of the liquidity
      * _amount: amount of krw that you want to withdraw
      */
-    function withdrawKRW(uint256 _amount) external onlyOwner{
+    function withdrawKRW(uint256 _amount) external onlyGovernance multiGovernance{
         krw.transfer(msg.sender, _amount);
     }
     
     /**
      * @dev since krw won't be minted but will be available in the contract, this function is used by the owner in case of emergency we need to withdraw all the liquidity
      */
-    function withdrawAllKRW() external onlyOwner{
+    function withdrawAllKRW() external onlyGovernance multiGovernance{
         krw.transfer(msg.sender, krw.balanceOf(address(this)));
     }
 }
